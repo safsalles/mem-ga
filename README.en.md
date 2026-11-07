@@ -1,82 +1,138 @@
-# MEM
+# mem-ga
 
 *Read in: [Português](README.md)*
 
-The Multiple Choice Method picks a set of alternatives that complement each other, instead of taking the best ones one by one. This folder holds the method as da Hora's thesis describes it, without a genetic algorithm: it tests every combination and shows the full ranking.
+The Multiple Choice Method (MEM, from the Portuguese *Método de Escolha Múltipla*) picks a set of alternatives that complement each other, instead of taking the best ones one by one. It fits any choice where the group matters more than each part: teams, portfolios, committees.
 
-The data is fictional and small, so you can follow the math. The example follows the idea of the thesis's recruitment problem: choosing 2 of 8 candidates for two openings, with grades on 6 criteria.
+This repository packages the method as a Python package, `mem`, with:
 
-## How to run
+- two scoring rules: the one from the thesis that proposed the MEM (`media`, mean) and the adaptation from my master's dissertation (`minimo`, minimum), with the same interface;
+- two searches: trying every combination, for small problems, and a genetic algorithm (MEM-GA), for large ones;
+- quotas per group (for example, 2 analysts and 1 manager), complementarity and weights computed from the data, and a radar chart.
 
-```bash
-pip install -r requirements.txt
-python mem.py
-```
+Two fictional hiring examples show how to use it: a small one, to follow the math, and a large one, with 300 candidates. The football application, with data from the 2017 Brazilian league, lives in the [football-analytics](https://github.com/safsalles/football-analytics) repository.
 
-To change the number of choices, tau, or the length of the list, use `--choices`, `--tau`, and `--top`. To use other data, use `--data`.
+The code is in English; messages, comments, column names and example data are in Portuguese.
 
-```bash
-python mem.py --choices 3 --tau 0.24 --top 5
-```
-
-At the end, the radar chart opens in a separate window, and the program ends when you close it. To save the chart to a file, use `--radar` with the file name, and to skip the window, use `--no-plot`.
+## Installation
 
 ```bash
-python mem.py --radar images/radar.png
+pip install git+https://github.com/safsalles/mem-ga@v1.0
 ```
 
-To run the tests, use `python -m pytest` in this folder.
+To work on the code and run the tests, clone the repository and, inside it:
+
+```bash
+pip install -e ".[test]"
+python -m pytest
+```
+
+## Usage
+
+With the repository cloned, from its folder (the example data does not come with `pip install`):
+
+```python
+from mem.busca import run_ga
+from mem.problema import load_problem
+from mem.regras import build_rule
+
+problem = load_problem("exemplos/recrutamento-grande/data")
+rule = build_rule(problem, "minimo", tau=0.54)
+vagas = {"analista": 2, "engenheiro": 1, "gestor": 1}
+result = run_ga(rule, problem.groups, vagas, size=4, seed=2026)
+print(sorted(problem.alternatives[i] for i in result.team), result.score)
+# ['P007', 'P038', 'P192', 'P276'] 0.6785714285714286
+```
+
+| Module | What it does |
+| --- | --- |
+| `mem.problema` | `Problem` (alternatives, criteria, direction, weights, groups), `load_problem` to read the CSVs, and `normalize` |
+| `mem.pesos` | Complementarity computed from the data (1 − \|r\|, as in CRITIC, within each group) and per-group weights |
+| `mem.regras` | The two rules, `mean_rule` and `minimum_rule`, and `build_rule` to build either from a `Problem` |
+| `mem.busca` | `exhaustive` (every combination), `run_ga` (genetic algorithm) and `traditional_choice` (the best of each group, for comparison) |
+| `mem.radar` | Radar chart with one panel per set |
 
 ## The method
 
-Equation numbers are the ones in the thesis.
+1. **Normalize the ratings.** Each criterion goes to the 0 to 1 range, with 1 for the best rating. Where less is better, the scale is flipped.
+2. **Rate the set on groups of criteria.** For each group of criteria, combine the set's performance, the weights and the complementarity between those criteria into one value.
+3. **Apply the tau cutoff.** A group of criteria counts as 1 if its value reaches tau, and 0 otherwise. This cutoff keeps a very high result from paying for a low one elsewhere: the method is non-compensatory.
+4. **Score.** The score is the share of groups of criteria that reach tau.
 
-1. **Normalize the payment matrix (Equation 3.1).** Each criterion goes to the 0 to 1 range, with 1 for the best evaluation. For `Faltas` (absences), less is better, so the direction flips.
-2. **Build the sets (Equations 3.2 and 3.3).** Alternatives and criteria are combined `n` by `n`, where `n` is the number of choices. With 8 alternatives, 6 criteria, and `n` equal to 2, that gives 28 sets and 15 criteria groups, or 420 evaluations.
-3. **Compute matrix B' (Equations 3.4 and 3.5).** Each evaluation is the set's average grade on the group's criteria, times the average weight, times the average complementarity among those criteria.
-4. **Apply the tau cutoff (Equation 3.8).** An evaluation counts as 1 if it reaches tau and 0 if it does not. This cutoff stops a very high result from paying for a low result in another group.
-5. **Rank the sets (Equation 3.9).** The score is the share of criteria groups that reach tau. Ties share a position, because the method can point to more than one good choice.
+With groups of alternatives (roles, positions), complementarity is computed within each group, and each group weighs more the criteria it stands out in.
 
-The default tau is 0.24. It uses the thesis's rule: a 50% performance, times the average weight (0.75), times the average complementarity (0.647), gives 0.243.
+## The two rules
 
-## The example
+Both take a set and return `(score, tie_break)`, so any search works with any rule.
 
-Candidates A1 and A2 have the best averages, but they are alike: strong in planning, logistics, and quality, and average in costs and people. A3 is the opposite.
+| | `media` (thesis) | `minimo` (adaptation) |
+| --- | --- | --- |
+| Criteria | Combined n at a time, n = set size | Combined in pairs |
+| Within the group of criteria | Mean performance (Equation 3.4 of the thesis) | Minimum performance |
+| Score | Share of groups of criteria reaching tau | Share of pairs reaching tau |
+| Tie-break | Mean of `min(value, tau)` over the groups | Mean of `min(value, tau)` over the pairs |
 
-| Rank | Weighted average | | MEM, choosing 2 | % of groups |
-| --- | --- | --- | --- | --- |
-| 1st | A1 | | A1, A3 | 66.7% |
-| 2nd | A2 | | A2, A3 | 66.7% |
-| 3rd | A3 | | A1, A2 | 60.0% |
+**Why the adaptation.** In the thesis, criteria are combined as many at a time as alternatives chosen. In a large set, such as 10 of 18 criteria, each combination ends up close to the set's overall mean, and differences between sets fade. With criteria in pairs, each pair still shows what the set has and what it lacks. And with the minimum instead of the mean, a strong criterion does not cover a weak one within the pair, so the method stays non-compensatory there too.
 
-The weighted average column is the traditional choice: each candidate is rated alone, by the average of the normalized grades with the criteria weights, and the top of the list is kept. MEM does group formation and rates each pair together, by what each one covers for the other.
+**The tie-break of the `media` rule is new.** In the thesis it only ran by trying every combination, and ties shared a position. The genetic algorithm needs a tie-break to have a direction among sets with the same score, so the `media` rule uses the same tie-break as `minimo`: how far, on average, the groups are from reaching tau.
 
-The intuitive choice would be A1 and A2, but that pair ranks 3rd in MEM. The two best pairs join one of them with A3, who covers what is missing.
+**Limit of the `media` rule.** The number of groups of criteria is C(criteria, n). With 18 criteria and a set of 10, that is 43,758 groups per evaluation, too slow for the genetic algorithm. Above 10,000 groups (`MAX_MEAN_GROUPS`), the rule refuses the problem with a message stating the numbers and suggesting the `minimo` rule. Trying every combination has a limit too: above 20 million evaluations, the exhaustive search refuses the problem.
 
-The radar chart shows this. Each colored line is a candidate, with grades already normalized, and the gray area is the pair's average, which is what MEM evaluates. On the left, A1 and A2 almost overlap: the average goes above 0.9 on four criteria but stays near 0 in costs and people. On the right, A1 and A3 complement each other and the average stays between 0.5 and 0.86 on every criterion. The pair A2, A3 ties with A1, A3 and would look similar. The chart labels are in Portuguese, like the program's output.
+## Small example: 2 of 8 candidates
 
-![Radar chart of the pairs A1, A2 and A1, A3](images/radar.png)
+```bash
+python exemplos/recrutamento-pequeno/exemplo.py
+python exemplos/recrutamento-pequeno/exemplo.py --regra minimo
+```
 
-The result depends on tau. At 0.28 or above, the cutoff is high enough that only the very high grades of A1 and A2 pass, and that pair returns to 1st place. That is why the program shows what changes with tau slightly above and slightly below, and the thesis runs the same sensitivity analysis.
+There are 8 candidates rated on 6 criteria, and the search tries all 28 pairs. Candidates A1 and A2 have the best averages, but they are alike: strong in planning, logistics and quality, and average in costs and people. A3 is the opposite.
+
+| Rank | Weighted mean | MEM, `media` rule | % of groups | MEM, `minimo` rule | % of pairs |
+| --- | --- | --- | --- | --- | --- |
+| 1st | A1 | A1, A3 | 66.7% | A1, A3 | 46.7% |
+| 1st | | A2, A3 | 66.7% | A2, A3 | 46.7% |
+| 3rd | A2 | A1, A2 | 60.0% | A1, A2 | 33.3% |
+
+The traditional choice takes A1 and A2, the top two by weighted mean. Under both rules that pair ranks 3rd, and the best pairs join one of them with A3, who covers what is missing. With tau 0.24 both rules agree at the top. The `minimo` rule gives lower scores, because each pair is worth its weaker criterion.
+
+In the radar chart, each colored line is a candidate and the gray area is the pair's mean. On the left, A1 and A2 nearly overlap. On the right, A1 and A3 complement each other.
+
+![Radar of the pairs A1, A2 and A1, A3](images/radar_pequeno.png)
+
+The result depends on tau. With the `media` rule and tau of 0.27 or more, the cutoff is high enough that only the very high ratings of A1 and A2 pass, and that pair moves back to 1st place. That is why the program shows what changes with tau slightly above and below. More in [exemplos/recrutamento-pequeno](exemplos/recrutamento-pequeno/).
+
+## Large example: a team of 4 out of 300 candidates
+
+```bash
+python exemplos/recrutamento-grande/exemplo.py
+```
+
+There are 300 fictional candidates (150 analysts, 90 engineers and 60 managers) rated on 8 criteria, for a team of 2 analysts, 1 engineer and 1 manager. That is over 60 million possible teams, so the search uses the genetic algorithm. A run takes about 20 seconds.
+
+| Team | People | `media` score | `minimo` score |
+| --- | --- | --- | --- |
+| `media` rule | P050, P110 (analysts), P218 (engineer), P276 (manager) | **50.0%** | 32.1% |
+| `minimo` rule | P007, P038 (analysts), P192 (engineer), P276 (manager) | 24.3% | **67.9%** |
+| Traditional choice | P038, P110 (analysts), P218 (engineer), P276 (manager) | 48.6% | 53.6% |
+
+The traditional choice takes the strongest people in each role. Each rule finds a team that beats it on its own score, and the two rules pick different teams: `media` swaps one analyst and stays close to the traditional team, while `minimo` swaps one analyst and the engineer. The `minimo` team loses a little in data and programming and gains in communication, negotiation and organization: it is more balanced, because each pair of criteria is worth the weaker of the two. The manager is the same in all three.
+
+![Radar of the three teams](images/radar_grande.png)
+
+Each rule's tau was chosen so the score does not saturate: with tau too low, every team passes everything; too high, no one passes. Trying 0.01 to 1.00, we kept the value where the traditional choice comes closest to 50% (0.63 for `media` and 0.54 for `minimo`). More, including how the data was generated, in [exemplos/recrutamento-grande](exemplos/recrutamento-grande/).
 
 ## Data format
 
-The three files live in `data/`, and criterion names must match across them.
+`load_problem` reads a folder with these files:
 
-- `alternatives.csv`: one row per alternative, with the `alternative` column and one column per criterion.
-- `criteria.csv`: `criterion`, `direction` (1 when more is better and 0 when more is worse), and `weight`, between 0 and 1.
-- `complementarity.csv`: matrix C. The higher the value, the more the two criteria complement each other. The diagonal stays empty.
+- `criteria.csv`: `criterion`, `direction` (1 when more is better and 0 when more is worse) and `weight`.
+- `alternatives.csv`: the `alternative` column, one column per criterion and, if there are quotas per group, the `group` column.
+- `complementarity.csv` (optional): the complementarity matrix between criteria, with an empty diagonal. Without it, complementarity is computed from the data.
 
 ## Check against the thesis
 
-The program was checked with the data from the thesis's numerical application, which is not in this repository. Choosing 2 with tau 0.20, all 45 pairs in Table 3.9 matched. With tau 0.19 and 0.21, 44 of 45 matched in Tables 3.10 and 3.11, and the pair that differs (A1, A8) has one criteria group more or less. Choosing 3, the 40 legible sets in Table 3.15 matched.
-
-## Why MEM-GA exists
-
-Testing everything only works for small problems, because combinations grow very fast. Choosing 10 players out of 317, with 18 criteria taken 10 by 10, would give about 2.4 x 10^18 sets, each with 43,758 criteria groups. That is why the program refuses problems with more than 20 million evaluations.
-
-[MEM-GA](../mem-ga/README.en.md) uses a genetic algorithm to search for a good set in those cases. It does not test everything, so it does not guarantee the best answer, and it makes two adaptations to the score, explained in its README.
+The `media` rule, with exhaustive search, was checked against the thesis's numerical application, whose data is not in this repository. For a choice of 2 with tau 0.20, all 45 pairs in Table 3.9 matched. With tau 0.19 and 0.21, 44 of 45 matched in Tables 3.10 and 3.11, and the differing pair (A1, A8) has one group of criteria more or less. For a choice of 3, the 40 legible sets in Table 3.15 matched. The tests store the small example's ranking so it cannot change silently.
 
 ## Source
 
-The method comes from the thesis *Método de Escolha Múltipla: uma proposta multicritério para seleção em conjunto de mais de uma alternativa*, by Henrique Rego Monteiro da Hora (Universidade Federal Fluminense, 2013). The thesis's original code is a MATLAB script, in Annex III. This Python version follows the equations and that script.
+The MEM was proposed in the doctoral thesis *Método de Escolha Múltipla: uma proposta multicritério para seleção em conjunto de mais de uma alternativa*, by Henrique Rego Monteiro da Hora (Universidade Federal Fluminense, 2013). The `minimo` rule and the genetic algorithm come from the master's dissertation *MEM-GA: Método de Escolha Múltipla com Algoritmo Genético aplicado à formação de equipes de futebol*, by Sérgio Augusto Faria Salles (Instituto Federal Fluminense, 2018), written in MATLAB and ported here to Python.
